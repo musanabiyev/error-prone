@@ -141,37 +141,37 @@ public abstract class BugChecker implements Suppressible, Serializable {
 
   /** Helper to create a Description for the common case where there is a fix. */
   @CheckReturnValue
-  protected Description describeMatch(Tree node, Fix fix) {
+  public Description describeMatch(Tree node, Fix fix) {
     return buildDescription(node).addFix(fix).build();
   }
 
   /** Helper to create a Description for the common case where there is a fix. */
   @CheckReturnValue
-  protected Description describeMatch(JCTree node, Fix fix) {
+  public Description describeMatch(JCTree node, Fix fix) {
     return describeMatch((Tree) node, fix);
   }
 
   /** Helper to create a Description for the common case where there is a fix. */
   @CheckReturnValue
-  protected Description describeMatch(DiagnosticPosition position, Fix fix) {
+  public Description describeMatch(DiagnosticPosition position, Fix fix) {
     return buildDescription(position).addFix(fix).build();
   }
 
   /** Helper to create a Description for the common case where there is no fix. */
   @CheckReturnValue
-  protected Description describeMatch(Tree node) {
+  public Description describeMatch(Tree node) {
     return buildDescription(node).build();
   }
 
   /** Helper to create a Description for the common case where there is no fix. */
   @CheckReturnValue
-  protected Description describeMatch(JCTree node) {
+  public Description describeMatch(JCTree node) {
     return buildDescription(node).build();
   }
 
   /** Helper to create a Description for the common case where there is no fix. */
   @CheckReturnValue
-  protected Description describeMatch(DiagnosticPosition position) {
+  public Description describeMatch(DiagnosticPosition position) {
     return buildDescription(position).build();
   }
 
@@ -182,7 +182,7 @@ public abstract class BugChecker implements Suppressible, Serializable {
    */
   @CheckReturnValue
   @Deprecated
-  protected Description describeMatch(Tree node, Optional<? extends Fix> fix) {
+  public Description describeMatch(Tree node, Optional<? extends Fix> fix) {
     return describeMatch(node, fix.map(f -> (Fix) f).orElse(SuggestedFix.emptyFix()));
   }
 
@@ -193,7 +193,7 @@ public abstract class BugChecker implements Suppressible, Serializable {
    */
   @CheckReturnValue
   @Deprecated
-  protected Description describeMatch(DiagnosticPosition position, Optional<? extends Fix> fix) {
+  public Description describeMatch(DiagnosticPosition position, Optional<? extends Fix> fix) {
     return describeMatch(position, fix.map(f -> (Fix) f).orElse(SuggestedFix.emptyFix()));
   }
 
