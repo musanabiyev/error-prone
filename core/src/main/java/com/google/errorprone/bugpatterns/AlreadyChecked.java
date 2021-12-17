@@ -17,10 +17,10 @@
 package com.google.errorprone.bugpatterns;
 
 import static com.google.common.collect.Multisets.removeOccurrences;
-import static com.google.common.collect.Sets.intersection;
-import static com.google.common.collect.Sets.union;
 import static com.google.errorprone.BugPattern.SeverityLevel.WARNING;
 import static com.google.errorprone.matchers.Description.NO_MATCH;
+import static com.google.errorprone.util.ASTHelpers.getType;
+import static com.google.errorprone.util.ASTHelpers.isSameType;
 import static java.lang.String.format;
 
 import com.google.common.collect.HashMultiset;
@@ -30,19 +30,29 @@ import com.google.errorprone.ErrorProneFlags;
 import com.google.errorprone.VisitorState;
 import com.google.errorprone.bugpatterns.BugChecker.CompilationUnitTreeMatcher;
 import com.google.errorprone.bugpatterns.threadsafety.ConstantExpressions;
-import com.google.errorprone.bugpatterns.threadsafety.ConstantExpressions.ConstantBooleanExpression;
+import com.google.errorprone.bugpatterns.threadsafety.ConstantExpressions.ConstantExpression;
 import com.google.errorprone.bugpatterns.threadsafety.ConstantExpressions.Truthiness;
 import com.google.errorprone.matchers.Description;
+import com.sun.source.tree.BlockTree;
 import com.sun.source.tree.CompilationUnitTree;
 import com.sun.source.tree.ConditionalExpressionTree;
+import com.sun.source.tree.ExpressionTree;
 import com.sun.source.tree.IfTree;
+import com.sun.source.tree.LambdaExpressionTree;
+import com.sun.source.tree.MethodInvocationTree;
+import com.sun.source.tree.MethodTree;
+import com.sun.source.tree.NewClassTree;
+import com.sun.source.tree.ReturnTree;
+import com.sun.source.tree.ThrowTree;
 import com.sun.source.tree.Tree;
+import com.sun.source.util.TreePath;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.HashSet;
 import java.util.Set;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
-/**
- * Bugpattern to find conditions which are checked more than once, and either vacuously true or
- * false.
- */
+/** Bugpattern to find conditions which are checked more than once. */
 @BugPattern(
     name = "AlreadyChecked",
     severity = WARNING,
@@ -64,8 +74,12 @@ public final class AlreadyChecked extends BugChecker implements CompilationUnitT
 
   /** Scans a compilation unit, keeping track of which things are known to be true and false. */
   private final class IfScanner extends SuppressibleTreePathScanner<Void, Void> {
-    private final Multiset<ConstantBooleanExpression> truths = HashMultiset.create();
-    private final Multiset<ConstantBooleanExpression> falsehoods = HashMultiset.create();
+    private final Deque<TreePath> enclosingMethod = new ArrayDeque<>();
+    private final Deque<Set<ConstantExpression>> truthsInMethod = new ArrayDeque<>();
+    private final Deque<Set<ConstantExpression>> falsehoodsInMethod = new ArrayDeque<>();
+
+    private final Multiset<ConstantExpression> truths = HashMultiset.create();
+    private final Multiset<ConstantExpression> falsehoods = HashMultiset.create();
     private final VisitorState state;
 
     private IfScanner(VisitorState state) {
@@ -74,10 +88,9 @@ public final class AlreadyChecked extends BugChecker implements CompilationUnitT
 
     @Override
     public Void visitIf(IfTree tree, Void unused) {
+      scan(tree.getCondition(), null);
       Truthiness truthiness =
           constantExpressions.truthiness(tree.getCondition(), /* not= */ false, state);
-
-      checkCondition(tree.getCondition(), truthiness);
 
       withinScope(truthiness, tree.getThenStatement());
 
@@ -85,6 +98,79 @@ public final class AlreadyChecked extends BugChecker implements CompilationUnitT
           constantExpressions.truthiness(tree.getCondition(), /* not= */ true, state),
           tree.getElseStatement());
       return null;
+    }
+
+    @Override
+    public Void visitReturn(ReturnTree tree, Void unused) {
+      super.visitReturn(tree, null);
+      handleMethodExitingStatement();
+      return null;
+    }
+
+    @Override
+    public Void visitThrow(ThrowTree tree, Void unused) {
+      super.visitThrow(tree, null);
+      handleMethodExitingStatement();
+      return null;
+    }
+
+    private void handleMethodExitingStatement() {
+      TreePath ifPath = getCurrentPath().getParentPath();
+      Tree previous = null;
+      while (ifPath != null && ifPath.getLeaf() instanceof BlockTree) {
+        previous = ifPath.getLeaf();
+        ifPath = ifPath.getParentPath();
+      }
+      if (ifPath == null) {
+        return;
+      }
+      TreePath methodPath = escapeBlock(ifPath.getParentPath());
+      if (methodPath == null || !(ifPath.getLeaf() instanceof IfTree)) {
+        return;
+      }
+      var ifTree = (IfTree) ifPath.getLeaf();
+      boolean then = ifTree.getThenStatement().equals(previous);
+
+      if (!enclosingMethod.isEmpty()
+          && enclosingMethod.getLast().getLeaf().equals(methodPath.getLeaf())) {
+        Truthiness truthiness =
+            constantExpressions.truthiness(ifTree.getCondition(), /* not= */ then, state);
+        truths.addAll(truthiness.requiredTrue());
+        falsehoods.addAll(truthiness.requiredFalse());
+        truthsInMethod.getLast().addAll(truthiness.requiredTrue());
+        falsehoodsInMethod.getLast().addAll(truthiness.requiredFalse());
+      }
+    }
+
+    private @Nullable TreePath escapeBlock(@Nullable TreePath path) {
+      while (path != null && path.getLeaf() instanceof BlockTree) {
+        path = path.getParentPath();
+      }
+      return path;
+    }
+
+    @Override
+    public Void visitLambdaExpression(LambdaExpressionTree tree, Void unused) {
+      withinMethod(() -> super.visitLambdaExpression(tree, null));
+      return null;
+    }
+
+    @Override
+    public Void visitMethod(MethodTree tree, Void unused) {
+      withinMethod(() -> super.visitMethod(tree, null));
+      return null;
+    }
+
+    private void withinMethod(Runnable runnable) {
+      enclosingMethod.addLast(getCurrentPath());
+      truthsInMethod.addLast(new HashSet<>());
+      falsehoodsInMethod.addLast(new HashSet<>());
+
+      runnable.run();
+
+      enclosingMethod.removeLast();
+      removeOccurrences(truths, truthsInMethod.removeLast());
+      removeOccurrences(falsehoods, falsehoodsInMethod.removeLast());
     }
 
     private void withinScope(Truthiness truthiness, Tree tree) {
@@ -97,36 +183,61 @@ public final class AlreadyChecked extends BugChecker implements CompilationUnitT
 
     @Override
     public Void visitConditionalExpression(ConditionalExpressionTree tree, Void unused) {
-      checkCondition(
-          tree.getCondition(), constantExpressions.truthiness(tree.getCondition(), false, state));
-      return super.visitConditionalExpression(tree, null);
+      scan(tree.getCondition(), null);
+      Truthiness truthiness =
+          constantExpressions.truthiness(tree.getCondition(), /* not= */ false, state);
+
+      withinScope(truthiness, tree.getTrueExpression());
+
+      withinScope(
+          constantExpressions.truthiness(tree.getCondition(), /* not= */ true, state),
+          tree.getFalseExpression());
+      return null;
     }
 
-    void checkCondition(Tree tree, Truthiness truthiness) {
-      Set<ConstantBooleanExpression> vacuousFalsehoods =
-          union(
-              intersection(truthiness.requiredTrue(), falsehoods.elementSet()),
-              intersection(truthiness.requiredFalse(), truths.elementSet()));
-      if (!vacuousFalsehoods.isEmpty()) {
-        state.reportMatch(
-            buildDescription(tree)
-                .setMessage(format("This condition (on %s) is vacuously false.", vacuousFalsehoods))
-                .build());
+    @Override
+    public Void scan(Tree tree, Void unused) {
+      // Fast path out if we don't know anything.
+      if (truths.isEmpty() && falsehoods.isEmpty()) {
+        return super.scan(tree, null);
       }
-      Set<ConstantBooleanExpression> vacuousTruths =
-          union(
-              intersection(truthiness.requiredTrue(), truths.elementSet()),
-              intersection(truthiness.requiredFalse(), falsehoods.elementSet()));
-      if (!vacuousTruths.isEmpty()) {
-        state.reportMatch(
-            buildDescription(tree)
-                .setMessage(
-                    format(
-                        "This condition (on %s) is vacuously true; it's already been checked by"
-                            + " this point.",
-                        vacuousTruths))
-                .build());
+      // As a heuristic, it's fairly harmless to do `if (a) { foo(a); }`. It's possibly nicer than
+      // a parameter comment for a literal boolean.
+      if (getCurrentPath().getLeaf() instanceof MethodInvocationTree
+          || getCurrentPath().getLeaf() instanceof NewClassTree) {
+        return super.scan(tree, null);
       }
+      if (!(tree instanceof ExpressionTree)
+          || !isSameType(getType(tree), state.getSymtab().booleanType, state)) {
+        return super.scan(tree, null);
+      }
+      constantExpressions
+          .constantExpression((ExpressionTree) tree, state)
+          .ifPresent(
+              e -> {
+                if (truths.contains(e)) {
+                  state.reportMatch(
+                      buildDescription(tree)
+                          .setMessage(
+                              format(
+                                  "This condition (on %s) is already known to be true; it (or its"
+                                      + " complement) has already been checked.",
+                                  e))
+                          .build());
+                }
+
+                if (falsehoods.contains(e)) {
+                  state.reportMatch(
+                      buildDescription(tree)
+                          .setMessage(
+                              format(
+                                  "This condition (on %s) is known to be false here. It (or its"
+                                      + " complement) has already been checked.",
+                                  e))
+                          .build());
+                }
+              });
+      return super.scan(tree, null);
     }
   }
 }
