@@ -58,7 +58,7 @@ public final class WellKnownMutability implements ThreadSafety.KnownTypes {
     return new WellKnownMutability(immutable, unsafe);
   }
 
-  public Map<String, AnnotationInfo> getKnownImmutableClasses() {
+  public ImmutableMap<String, AnnotationInfo> getKnownImmutableClasses() {
     return knownImmutableClasses;
   }
 
@@ -68,7 +68,7 @@ public final class WellKnownMutability implements ThreadSafety.KnownTypes {
   }
 
   @Override
-  public Set<String> getKnownUnsafeClasses() {
+  public ImmutableSet<String> getKnownUnsafeClasses() {
     return knownUnsafeClasses;
   }
 
